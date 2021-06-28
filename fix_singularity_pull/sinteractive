@@ -1,0 +1,386 @@
+#!/bin/bash
+
+command=""
+extra_args=""
+gpu_num=0
+gpu_max=4
+gpu_res=""
+max_int_jobs=1
+mem_max=65536
+mem=2000
+nvme_max=640
+nvme=32
+nvme_set=0
+time="24:00:00"
+partition="X"
+outfile="X"
+outmode="jobsub"
+jobname="interactive"
+threads=1
+user=$(whoami)
+project_id="X"
+interactive_mode=0
+if [[ -n "${CSC_PRIMARY_PROJECT}" ]]; then
+    project_id=${CSC_PRIMARY_PROJECT}
+fi
+
+
+#gid=$(pwd | awk -F "/" '{print $3}' | '{print $2}')
+print_help=0
+
+#read the command line arguments
+while [[ $# -ge 1 ]]
+do
+  case "$1" in
+          '--interactive' | '-i')
+          interactive_mode=1
+          shift
+          ;;
+          '--mem' | '-m')
+            mem=($2)
+            if [[ ${mem:(-1)} == "G" ]]; then
+                value=${mem::-1}
+                (( mem = value * 1024 ))
+            fi
+            if [[ ${mem:(-1)} == "M" ]]; then
+                 value=${mem::-1}
+                 mem=$value
+            fi
+            shift 
+            shift 
+          ;; 
+          '-t' | '--time' )
+            time=($2)
+            shift 
+            shift 
+          ;;
+          '--account' | '-A' )
+            project_id=($2)
+            shift
+            shift
+          ;;
+          '--job-name' | '-j')
+            jobname=($2)
+            shift 
+            shift 
+          ;; 
+          '--cores' | '-c')
+            threads=($2)
+            if [[ $threads -gt 40 ]]; then
+               echo "sinteractive can request in maximum 40 cores/threads"
+               exit 1
+            fi
+            shift 2            
+          ;;
+          '--tmp' | '-d' )
+          nvme=$2           
+          nvme_set=1
+          shift   
+          shift
+          ;;
+          '--partition' | '-p')
+          partition=$2
+          shift
+          shift
+          ;;
+          '--gpu' | '-g')
+          gpu_num=$2
+          if [[ $gpu_num -gt $gpu_max ]];then
+               echo "sinteractive can request in maximum $gpu_max gpus."
+               exit 1
+          fi
+          gpu_res="gpu:v100:$gpu_num"
+          partition="gpu"
+          shift   
+          shift
+          ;; 
+          '-f' | '--file' )
+          outfile=$2
+          if [[ -e "$outfile" ]]; then
+             echo "File $outfile already exists"
+             exit 1
+          fi
+          shift
+          shift
+          ;;
+          '-a' | '--args' )
+          outmode="args"
+          outfile=$2
+          if [[ -e "$outfile" ]]; then
+             echo "File $outfile already exists"
+             exit 1
+          fi
+          shift
+          shift
+          ;;
+          '-h' | '--help' | '-help')
+          print_help=(1)
+          shift
+          ;;
+          *)
+             command="$command $1"
+             shift
+          ;;
+  esac
+done
+
+#If outfile is defined we use small partitio unless gpu is used
+if [[ $outfile != "X" ]] && [[ $partition == "X" ]] ;then
+  partition="small"
+fi
+if [[ $outfile != "X" ]] && [[ $nvme_set -eq 0 ]] ;then
+  nvme=0
+fi
+if [[ $outfile != "X" ]] && [[ $jobname == "interactive" ]] ;then
+  jobname="ExampleBatchJob"
+fi
+
+
+#user help
+if [[ print_help -eq 1 ]]; then
+cat <<EOF
+sinteractive launches an interactive batch job. 
+
+Job is first submitted to the interactive partition of Puhti. This
+partition provides a quick access to an interactive batch job with
+local scratch disk area. 
+
+You can have only one active session open in the interactive partition. Furher
+in interactive partition you can reserve in maximum 4 cores,  64 GB of 
+memory, 7 days of computing, and 64O GB of local scratch space.
+
+If your requests exceed these limits or you already have a session in
+intercative partition, then the job can be submitted to small or gpu
+patritions in stead. However, in these cases you may need wait some
+time before the requested resources become available.
+
+
+Syntax:
+
+  interactive <options>
+
+Options
+  -i, --interactive  Assign all batch job parameter interactively
+  -t, --time       SLURM run time reservation in format hh:mm:ss. 
+                   Default: $time
+  -m, --mem        SLURM memory reservation in MB. Default: $mem
+  -j, --jobname    SLURM job name. Default: $jobname
+  -c, --cores      SLURM num-cpus. Default: 1
+  -A, --account    SLURM Accounting project. Default: \$CSC_PRIMARY_PROJECT.
+  -d, --tmp        Size of job specifinc /tmp or \$LOCAL_SCRATCH disk (in GB). 
+                   Default $nvme
+  -g, --gpu        Number of GPU:s to reserve. Default 0, Max $gpu_max
+  -f, --file       Write the given resource requests in SALURM format to a 
+                   batch job file in stead of launching interactive batch job. 
+  -a, --args       Write the given resource as srun arguments instead of
+                   launching interactive batch job. 
+EOF
+exit 0
+fi
+
+#bash -l is the default command
+if [[ $command == "" ]]; then
+   command="bash -l"
+fi
+
+##try to guess project if not otherwise defined
+#if [[ $project_id == "X" ]]; then
+#      project_id=$(pwd | grep scratch | awk -F "/" '{print $3}')
+#fi
+
+#check that project exist
+if [[ $(groups | grep -w -c $project_id 2> /dev/null ) -ne 1 ]]; then
+   #active_groups=()
+   active_groups_names=()
+   for g in $(groups) 
+   do 
+     if [[ -d "/scratch/${g}" && ! -h "/scratch/${g}" ]]; then 
+         #active_groups+=(${g})
+         title=$(csc-projects -p ${g} -o T)
+         active_groups_names+=("${g} ${title}")
+     fi
+   done
+   if [[ $project_id != "X" ]]; then
+       echo "Accounting project $project_id not found."
+   fi
+   echo
+   echo "Define project with option: -A or --account"
+   if [[ ${#active_groups_names[@]} -gt 0 ]]; then
+           echo "or choose a project by giving an item number from the list below: "
+           echo ""
+           select project_select in "${active_groups_names[@]}" "Quit"; do
+               [[ -n "$project_select" ]] && break
+           done
+   fi 
+   if [[ $project_select == "Quit"  ]];then
+      exit 0
+   else
+     project_id=$(echo $project_select | awk '{print $1}')
+   fi  
+fi
+
+
+#
+if [[ $interactive_mode -eq 1 ]]; then
+   echo "Give time reservation in format hours:minutes:seconds [${time}]"
+   read input
+   if [[ $input != "" ]]; then 
+    time=${input//" "/""}
+   fi
+
+   echo "Give memory reservation in Megabytes(M) or Gigabytes(G) [${mem}]M"
+   read input
+   if [[ $input != "" ]]; then 
+     mem=${input//" "/""}
+     if [[ ${mem:(-1)} == "G" ]]; then
+       value=${mem::-1}
+      (( mem = value * 1024 ))
+     fi
+     if [[ ${mem:(-1)} == "M" ]]; then
+       value=${mem::-1}
+       mem=$value
+     fi
+   fi
+   echo "Give number of computing cores you want to use [${threads}]"
+   read input
+   if [[ $input != "" ]]; then 
+    threads=${input//" "/""}
+   fi
+   
+   echo "Define the size if the temporary disk area [${nvme}]G"
+   read input
+   if [[ $input != "" ]]; then 
+    if [[ ${input:(-1)} == "G" ]]; then
+       input=${input::-1}
+    fi
+    nvme=${input//" "/""}
+   fi
+fi
+
+ 
+  
+
+#check if job fits to interactive partition
+if [[ $mem -le $mem_max &&  $threads -lt 5 && $nvme -le $nvme_max && $gpu_num -eq 0 && $partition == "X" ]];then
+  int_jobs=$(squeue -p interactive -u $user -l | grep -c RUNNING)
+  if [[ $int_jobs -ge $max_int_jobs ]]; then 
+    echo "--------------------------------------------------------"
+    echo "Users can have only $max_int_jobs session open in the interactive partition of Puhti."
+    echo "You have already $int_jobs job running in the interactive queue, so you can't start more jobs in this partition."
+    echo "Do you want to submit a request to open a similar interactive job in the small partition of Puhti [y/n]?"
+    partition="small"
+    read ans
+    if [[ $ans != "y" && $ans != "yes" ]]; then
+       echo "OK."
+       exit 0
+    fi   
+  else
+     partition="interactive"
+     #extra_args="--reservation=interactive_part"
+  fi
+else
+  if [[ $partition == "X" ]]; then
+    echo "Resource requests exceed the limits of intreactive partition."
+    if [[ $gpu_num -gt 0 ]];then
+       partition="gpu"
+    else
+       hours=$( echo $time | awk -F : '{print  $1}')
+       if [[ $hours -le 72 ]]; then
+          partition="small"     
+       else
+          partition="longrun"
+       fi
+    fi
+    echo "Do you want to submit a request to open a similar interactive job in the $partition partition of Puhti [y/n]?"
+    read ans
+    if [[ $ans != "y" && $ans != "yes" ]]; then
+         echo "OK."
+         exit 0
+    fi
+  fi  
+fi
+
+#In case interactive is not used
+if [[ $partition != "interactive" ]];then
+  echo ""
+  echo "Request to open a new interactive batch job is submitted"
+  echo "Requested resources:"
+  echo "  Maximum run time (hours:min:sec): $time"
+  echo "  Maximum memory (MB): $mem "
+  echo "  \$TMPDIR size (GB): $nvme "
+  echo "  Number of gpus: $gpu_num "
+  echo "  Number of cores/threads: $threads "
+  echo "  Accounting project: $project_id"
+  echo "  Partition: $partition"
+  echo " "
+  echo "Note that it may take some some time before the session gets the requested resources."
+  echo "Do you want to get e-mail, when the interactive session starts[y/n]?"
+  read ans
+  if [[ $ans == "y" || $ans == "yes" ]]; then
+       echo "Please give your email address:"
+       read email
+       email_def="--mail-type=BEGIN --mail-user=$email"
+  fi  
+else
+  echo ""
+  echo "Interactive batch job is launched with following resources:"
+  echo "  Maximum run time (hours:min:sec): $time"
+  echo "  Maximum memory (MB): $mem "
+  echo "  \$TMPDIR size (GB): $nvme "
+  echo "  Number of cores/threads: $threads "
+  echo "  Accounting project: $project_id"
+  echo " "
+fi
+
+if [[ -z $DISPLAY ]]; then
+   srun_args="--ntasks=1 --time=$time --mem=$mem --account=$project_id --partition=$partition --cpus-per-task=$threads  --gres=nvme:$nvme,$gpu_res --pty $email_def"
+else 
+   srun_args="--ntasks=1 --time=$time --mem=$mem --account=$project_id --partition=$partition --cpus-per-task=$threads  --gres=nvme:$nvme,$gpu_res --x11=first --pty $email_def"
+fi
+
+if [[ $outfile == "X" ]]; then
+   login_time=$(date)
+   srun $srun_args $command
+   exit_time=$(date)
+elif [[ $outmode == "args" ]]; then
+   echo "$srun_args" > $outfile
+else
+   cat <<EOF > $outfile
+#!/bin/bash
+#SBATCH --job-name=$jobname
+#SBATCH --account=$project_id
+#SBATCH --time=$time
+#SBATCH --mem=$mem
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=$threads  
+#SBATCH --partition=$partition
+EOF
+   if [[ $nvme -gt 0 ]]; then
+      if [[ $gpu_num > 0 ]]; then
+          echo "#SBATCH --gres=nvme:$nvme,$gpu_res" >> $outfile    
+      else
+          echo "#SBATCH --gres=nvme:$nvme" >> $outfile  
+      fi
+   fi   
+   if [[ $email_def != "" ]]; then
+      echo "#SBATCH $email_def" >> $outfile
+   fi
+  echo "" >> $outfile
+  echo "# Add module load commands here" >> $outfile
+  echo "" >> $outfile
+  echo "" >> $outfile
+  echo "# Add commands to be executed here" >> $outfile
+  echo ""
+  echo "Batch job parameter written into file:"
+  echo "   $outfile"
+  echo ""
+  echo "Add you setup and execution commands to this file"
+  echo "and submit it to batch job system."
+fi
+
+message="sinteractive $login_time $exit_time mem: $mem threads: $threads"
+printf '{"version": "1.1", "host": "%s", "short_message": "utility log", "full_message": "%s", "level": 6, "_user": "%d"}' $(hostname) "$message" $(id -u) > /dev/udp/195.148.30.172/12201
+
+
+exit 0 

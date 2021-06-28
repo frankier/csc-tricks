@@ -1,0 +1,3 @@
+#!/bin/bash
+
+exec $HOME/squashfs-tools/squashfs-tools/mksquashfs $@ -mem 1G -processors 8
