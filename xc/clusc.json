@@ -1,0 +1,35 @@
+{
+    "__default__": {
+        "mail-user" : "frankie@robertson.name",
+        "time" : "2:00:00",
+        "nodes" : 1,
+        "account": "project_2003833",
+        "partition": "small"
+    },
+    "download_reddit": {
+        "time" : "12:00:00"
+    },
+    "download_newscrawl": {
+        "time" : "12:00:00"
+    },
+    "extract_reddit": {
+        "time" : "2-00:00:00",
+        "mem" : "4G",
+        "cpus-per-task": 2
+    },
+    "tokenize_opus": {
+        "time" : "2-00:00:00",
+        "mem" : "4G",
+        "cpus-per-task": 2
+    },
+    "tokenize_newscrawl" {
+        "time" : "2-00:00:00",
+        "mem" : "4G",
+        "cpus-per-task": 2
+    },
+    "tokenize_oscar" {
+        "time" : "2-00:00:00",
+        "mem" : "4G",
+        "cpus-per-task": 2
+    }
+}
